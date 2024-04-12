@@ -6,15 +6,44 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
-const LOCFONTDIR: &str = "Library/Fonts";
-const SYSFONTDIR: &str = "/System/Library/Fonts";
+const LOCFONTDIR: &std::path::Path = "Library/Fonts";
+#[cfg(target_os = "macos")]
+const SYSFONTDIR: &std::path::Path = "/System/Library/Fonts";
+
+#[cfg(target_os = "linux")]
+fn check_local_font_dirs() -> Result<Vec<PathBuf>, std::env::VarError> {
+    use home::home_dir;
+    const COMMON_FONT_LOCATIONS: &[&str] = &[
+        ".local/share/fonts",
+        ".local/share/flatpak/exports/share/fonts",
+        ".fonts",
+    ];
+    if let Some(home) = home_dir() {
+        let mut joined_locations: Vec<PathBuf> = Vec::new();
+        for font_location in COMMON_FONT_LOCATIONS {
+            let new_path = home.clone();
+            let new_path = new_path.join(font_location);
+            joined_locations.push(new_path.clone());
+        }
+        Ok(joined_locations)
+    } else {
+        Err(env::VarError::NotPresent)
+    }
+}
+#[cfg(target_os = "linux")]
+const SYSFONTDIR: &[&str] = &[
+    "/usr/share/fonts/",
+    "/usr/X11R6/lib/X11/fonts",
+    "/var/lib/flatpak/exports/share/fonts",
+];
 
 #[derive(Debug)]
 struct FontMatch {
     matched: bool,
-    location: String,
+    location: PathBuf,
 }
 
 // pub fn get_otf_features() -> HashMap<String, Value> {
@@ -197,7 +226,7 @@ pub fn font_finder(fontname: &str, fontdir: &str) {
     let mut is_default_dir = false;
     let mut query_result = FontMatch {
         matched: false,
-        location: String::new(),
+        location: PathBuf::new(),
     };
 
     // check if fontdir is empty
@@ -217,23 +246,51 @@ pub fn font_finder(fontname: &str, fontdir: &str) {
         }
     } else {
         // use LOCFONTDIR and SYSFONTDIR
+        // TODO Move this somewhere??
+        #[cfg(target_os = "macos")]
         let lookdirs = vec![
             Path::new(&env::var("HOME").unwrap()).join(LOCFONTDIR),
             Path::new(SYSFONTDIR).to_path_buf(),
         ];
 
-        for ld in lookdirs {
-            println!("Looking in {:?}", ld);
-            for f in fs::read_dir(&ld).unwrap() {
-                let file = f.unwrap();
-                let filename = file.file_name().into_string().unwrap();
-                // println!("Looking for {} in {}", re, filename);
-                if Regex::new(&re).unwrap().is_match(&filename) {
-                    query_result.matched = true;
-                    query_result.location = file.path().to_str().unwrap().to_string();
-                    println!("{:?}", query_result);
+        #[cfg(target_os = "linux")]
+        let mut lookdirs: Vec<PathBuf> = Vec::new();
+
+        #[cfg(target_os = "linux")]
+        match check_local_font_dirs() {
+            Ok(localfontdirs) => {
+                for fontdir in localfontdirs {
+                    lookdirs.push(fontdir);
                 }
             }
+            Err(err) => {
+                eprintln!("Expected local font dirs. Got {}", err)
+            }
+        };
+
+        #[cfg(target_os = "linux")]
+        for fontdir in SYSFONTDIR {
+            lookdirs.push(fontdir.into());
+        };
+
+        println!("{:#?}", lookdirs);
+
+        // TODO: We can use walkdir here.
+        // The fonts on linux can be further down an existing directory
+        for ld in lookdirs {
+            println!("Looking in {:?}", ld);
+            if let Ok(fdirs) = fs::read_dir(&ld) {
+                for fd in fdirs {
+                    let file = fd.unwrap();
+                    let filename = file.file_name().into_string().unwrap();
+                    // println!("Looking for {} in {}", re, filename);
+                    if Regex::new(&re).unwrap().is_match(&filename) {
+                        query_result.matched = true;
+                        query_result.location = file.path().to_str().unwrap().into();
+                        println!("{:?}", query_result);
+                    };
+                }
+            };
         }
         // for f in fs::read_dir(&Path::new(&env::var("HOME").unwrap()).join(LOCFONTDIR)).unwrap() {
         //     let file = f.unwrap();
